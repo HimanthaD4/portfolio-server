@@ -13,32 +13,10 @@ const processImageForResponse = (project, useThumbnail = false) => {
       projectObj.image.optimizedData;
     
     if (imageData) {
-      projectObj.image = {
-        contentType: projectObj.image.contentType,
-        data: imageData.toString('base64'),
-        size: projectObj.image.optimizedSize,
-        originalSize: projectObj.image.originalSize
-      };
-    } else {
-      projectObj.image = undefined;
-    }
-  }
-  
-  return projectObj;
-};
-
-const processImageForResponse = (project, useThumbnail = false) => {
-  const projectObj = project.toObject ? project.toObject() : project;
-  
-  if (projectObj.image) {
-    const imageData = useThumbnail ? 
-      (projectObj.image.thumbnailData || projectObj.image.optimizedData) : 
-      projectObj.image.optimizedData;
-    
-    if (imageData) {
-      // Return a URL-accessible path instead of base64
+      // Return both URL and base64 for backward compatibility
       projectObj.image = {
         url: `/api/projects/${projectObj._id}/image${useThumbnail ? '/thumbnail' : ''}`,
+        base64: imageData.toString('base64'),
         contentType: projectObj.image.contentType,
         size: projectObj.image.optimizedSize,
         originalSize: projectObj.image.originalSize
@@ -51,7 +29,7 @@ const processImageForResponse = (project, useThumbnail = false) => {
   return projectObj;
 };
 
-// Add new route handlers for image serving
+// Image serving endpoint
 const serveImage = async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
@@ -59,16 +37,20 @@ const serveImage = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Image not found' });
     }
 
-    const imageData = req.params.type === 'thumbnail' ? 
-      project.image.thumbnailData : 
+    const isThumbnail = req.path.endsWith('/thumbnail');
+    const imageData = isThumbnail ? 
+      (project.image.thumbnailData || project.image.optimizedData) : 
       project.image.optimizedData;
 
     if (!imageData) {
       return res.status(404).json({ success: false, message: 'Image not found' });
     }
 
-    res.set('Content-Type', project.image.contentType);
-    res.set('Cache-Control', 'public, max-age=31536000'); // 1 year cache
+    res.set({
+      'Content-Type': project.image.contentType,
+      'Cache-Control': 'public, max-age=31536000', // 1 year cache
+      'Content-Length': imageData.length
+    });
     res.send(imageData);
   } catch (err) {
     console.error('Error serving image:', err);
@@ -76,6 +58,7 @@ const serveImage = async (req, res) => {
   }
 };
 
+// Get all projects with pagination
 const getAllProjects = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -102,10 +85,10 @@ const getAllProjects = async (req, res) => {
       query.$text = { $search: req.query.search };
     }
     
-    // Get total count for pagination info
+    // Get total count for pagination
     const total = await Project.countDocuments(query);
     
-    // Get projects with optimized projection (excluding full image data for listing)
+    // Get projects with optimized projection
     const projects = await Project.find(query, {
       title: 1,
       description: 1,
@@ -122,7 +105,7 @@ const getAllProjects = async (req, res) => {
     .sort({ createdAt: -1 })
     .skip(skip)
     .limit(limit)
-    .lean(); // Use lean() for faster queries when not needing Mongoose documents
+    .lean();
     
     // Process images (using thumbnails for listings)
     const transformedProjects = projects.map(project => 
@@ -138,7 +121,7 @@ const getAllProjects = async (req, res) => {
         pages: Math.ceil(total / limit),
         limit
       }
-    });
+    }, 3600); // Cache for 1 hour
     
     res.status(200).json({ 
       success: true,
@@ -157,6 +140,7 @@ const getAllProjects = async (req, res) => {
   }
 };
 
+// Get single project by ID
 const getProjectById = async (req, res) => {
   try {
     const cacheKey = `project:${req.params.id}`;
@@ -179,7 +163,7 @@ const getProjectById = async (req, res) => {
     const projectObj = processImageForResponse(project);
     
     // Cache the result
-    await Project.cache(cacheKey, projectObj);
+    await Project.cache(cacheKey, projectObj, 3600); // Cache for 1 hour
     
     res.status(200).json({ 
       success: true, 
@@ -192,6 +176,7 @@ const getProjectById = async (req, res) => {
   }
 };
 
+// Create new project
 const createProject = async (req, res) => {
   try {
     const { title, description, tags, category, github, live, featured } = req.body;
@@ -222,10 +207,15 @@ const createProject = async (req, res) => {
     res.status(201).json({ success: true, data: projectObj });
   } catch (err) {
     console.error('Error in createProject:', err);
-    res.status(400).json({ success: false, message: err.message });
+    res.status(400).json({ 
+      success: false, 
+      message: err.message,
+      ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+    });
   }
 };
 
+// Update existing project
 const updateProject = async (req, res) => {
   try {
     const { title, description, tags, category, github, live, featured } = req.body;
@@ -262,21 +252,37 @@ const updateProject = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Project not found' });
     }
     
+    // Clear cache for this project
+    if (redisClient) {
+      await redisClient.del(`project:${req.params.id}`);
+    }
+    
     const projectObj = processImageForResponse(updatedProject);
     
     res.status(200).json({ success: true, data: projectObj });
   } catch (err) {
     console.error('Error in updateProject:', err);
-    res.status(400).json({ success: false, message: err.message });
+    res.status(400).json({ 
+      success: false, 
+      message: err.message,
+      ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+    });
   }
 };
 
+// Delete project
 const deleteProject = async (req, res) => {
   try {
     const project = await Project.findByIdAndDelete(req.params.id);
     if (!project) {
       return res.status(404).json({ success: false, message: 'Project not found' });
     }
+    
+    // Clear cache for this project
+    if (redisClient) {
+      await redisClient.del(`project:${req.params.id}`);
+    }
+    
     res.status(200).json({ success: true, data: project });
   } catch (err) {
     console.error('Error in deleteProject:', err);
