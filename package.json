@@ -13,7 +13,6 @@
   "license": "ISC",
   "dependencies": {
     "bcryptjs": "^2.4.3",
-    "connect-redis": "^9.0.0",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
     "dotenv": "^16.0.3",
@@ -24,12 +23,13 @@
     "mongoose": "^7.0.3",
     "multer": "^1.4.5-lts.1",
     "path": "^0.12.7",
-    "redis": "^5.5.6"
+    "redis": "^4.6.13",
+    "sharp": "^0.33.2"
   },
   "devDependencies": {
     "nodemon": "^2.0.22"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": "18.x"
   }
 }
