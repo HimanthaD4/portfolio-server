@@ -27,6 +27,55 @@ const processImageForResponse = (project, useThumbnail = false) => {
   return projectObj;
 };
 
+const processImageForResponse = (project, useThumbnail = false) => {
+  const projectObj = project.toObject ? project.toObject() : project;
+  
+  if (projectObj.image) {
+    const imageData = useThumbnail ? 
+      (projectObj.image.thumbnailData || projectObj.image.optimizedData) : 
+      projectObj.image.optimizedData;
+    
+    if (imageData) {
+      // Return a URL-accessible path instead of base64
+      projectObj.image = {
+        url: `/api/projects/${projectObj._id}/image${useThumbnail ? '/thumbnail' : ''}`,
+        contentType: projectObj.image.contentType,
+        size: projectObj.image.optimizedSize,
+        originalSize: projectObj.image.originalSize
+      };
+    } else {
+      projectObj.image = undefined;
+    }
+  }
+  
+  return projectObj;
+};
+
+// Add new route handlers for image serving
+const serveImage = async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.id);
+    if (!project || !project.image) {
+      return res.status(404).json({ success: false, message: 'Image not found' });
+    }
+
+    const imageData = req.params.type === 'thumbnail' ? 
+      project.image.thumbnailData : 
+      project.image.optimizedData;
+
+    if (!imageData) {
+      return res.status(404).json({ success: false, message: 'Image not found' });
+    }
+
+    res.set('Content-Type', project.image.contentType);
+    res.set('Cache-Control', 'public, max-age=31536000'); // 1 year cache
+    res.send(imageData);
+  } catch (err) {
+    console.error('Error serving image:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
 const getAllProjects = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -240,5 +289,6 @@ module.exports = {
   getProjectById,
   createProject,
   updateProject,
-  deleteProject
+  deleteProject,
+  serveImage
 };
