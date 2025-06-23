@@ -1,272 +1,104 @@
 const Project = require('../models/Project');
-const sharp = require('sharp');
-const DEFAULT_PAGE_SIZE = 10;
-const MAX_PAGE_SIZE = 100;
 
-// Helper function to process image data for response
-const processImageForResponse = (project, useThumbnail = false) => {
-  const projectObj = project.toObject ? project.toObject() : project;
-  
-  if (projectObj.image) {
-    const imageData = useThumbnail ? 
-      (projectObj.image.thumbnailData || projectObj.image.optimizedData) : 
-      projectObj.image.optimizedData;
-    
-    if (imageData) {
-      // Return both URL and base64 for backward compatibility
-      projectObj.image = {
-        url: `/api/projects/${projectObj._id}/image${useThumbnail ? '/thumbnail' : ''}`,
-        base64: imageData.toString('base64'),
-        contentType: projectObj.image.contentType,
-        size: projectObj.image.optimizedSize,
-        originalSize: projectObj.image.originalSize
-      };
-    } else {
-      projectObj.image = undefined;
-    }
-  }
-  
-  return projectObj;
-};
-
-// Image serving endpoint
-const serveImage = async (req, res) => {
-  try {
-    const project = await Project.findById(req.params.id);
-    if (!project || !project.image) {
-      return res.status(404).json({ success: false, message: 'Image not found' });
-    }
-
-    const isThumbnail = req.path.endsWith('/thumbnail');
-    const imageData = isThumbnail ? 
-      (project.image.thumbnailData || project.image.optimizedData) : 
-      project.image.optimizedData;
-
-    if (!imageData) {
-      return res.status(404).json({ success: false, message: 'Image not found' });
-    }
-
-    res.set({
-      'Content-Type': project.image.contentType,
-      'Cache-Control': 'public, max-age=31536000', // 1 year cache
-      'Content-Length': imageData.length
-    });
-    res.send(imageData);
-  } catch (err) {
-    console.error('Error serving image:', err);
-    res.status(500).json({ success: false, message: 'Server error' });
-  }
-};
-
-// Get all projects with pagination
+// Get all projects
 const getAllProjects = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = Math.min(parseInt(req.query.limit) || DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
-    const skip = (page - 1) * limit;
+    const projects = await Project.find({}).sort({ createdAt: -1 });
+    const projectsWithImages = projects.map(project => ({
+      ...project.toObject(),
+      image: project.image ? {
+        url: `/api/projects/${project._id}/image`,
+        contentType: project.image.contentType,
+        size: project.image.size
+      } : null
+    }));
     
-    const cacheKey = `projects:${page}:${limit}:${req.query.featured || 'all'}:${req.query.category || 'all'}`;
-    
-    // Try to get cached data
-    const cachedData = await Project.getCached(cacheKey);
-    if (cachedData) {
-      return res.status(200).json({ 
-        success: true, 
-        fromCache: true,
-        data: cachedData 
-      });
-    }
-    
-    // Build query
-    const query = {};
-    if (req.query.featured) query.featured = req.query.featured === 'true';
-    if (req.query.category) query.category = req.query.category;
-    if (req.query.search) {
-      query.$text = { $search: req.query.search };
-    }
-    
-    // Get total count for pagination
-    const total = await Project.countDocuments(query);
-    
-    // Get projects with optimized projection
-    const projects = await Project.find(query, {
-      title: 1,
-      description: 1,
-      tags: 1,
-      category: 1,
-      featured: 1,
-      createdAt: 1,
-      updatedAt: 1,
-      github: 1,
-      live: 1,
-      'image.contentType': 1,
-      'image.thumbnailData': 1
-    })
-    .sort({ createdAt: -1 })
-    .skip(skip)
-    .limit(limit)
-    .lean();
-    
-    // Process images (using thumbnails for listings)
-    const transformedProjects = projects.map(project => 
-      processImageForResponse(project, true)
-    );
-    
-    // Cache the result
-    await Project.cache(cacheKey, {
-      data: transformedProjects,
-      pagination: {
-        total,
-        page,
-        pages: Math.ceil(total / limit),
-        limit
-      }
-    }, 3600); // Cache for 1 hour
-    
-    res.status(200).json({ 
-      success: true,
-      fromCache: false,
-      data: transformedProjects,
-      pagination: {
-        total,
-        page,
-        pages: Math.ceil(total / limit),
-        limit
-      }
-    });
+    res.json({ success: true, data: projectsWithImages });
   } catch (err) {
-    console.error('Error in getAllProjects:', err);
+    console.error('Error getting projects:', err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 
-// Get single project by ID
+// Get single project
 const getProjectById = async (req, res) => {
   try {
-    const cacheKey = `project:${req.params.id}`;
-    
-    // Try to get cached data
-    const cachedData = await Project.getCached(cacheKey);
-    if (cachedData) {
-      return res.status(200).json({ 
-        success: true, 
-        fromCache: true,
-        data: cachedData 
-      });
-    }
-    
     const project = await Project.findById(req.params.id);
     if (!project) {
       return res.status(404).json({ success: false, message: 'Project not found' });
     }
     
-    const projectObj = processImageForResponse(project);
+    const projectWithImage = {
+      ...project.toObject(),
+      image: project.image ? {
+        url: `/api/projects/${project._id}/image`,
+        contentType: project.image.contentType,
+        size: project.image.size
+      } : null
+    };
     
-    // Cache the result
-    await Project.cache(cacheKey, projectObj, 3600); // Cache for 1 hour
-    
-    res.status(200).json({ 
-      success: true, 
-      fromCache: false,
-      data: projectObj 
-    });
+    res.json({ success: true, data: projectWithImage });
   } catch (err) {
-    console.error('Error in getProjectById:', err);
+    console.error('Error getting project:', err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 
-// Create new project
+// Create project
 const createProject = async (req, res) => {
   try {
     const { title, description, tags, category, github, live, featured } = req.body;
     
-    const parsedTags = typeof tags === 'string' ? 
-      tags.split(',').map(tag => tag.trim()) : 
-      Array.isArray(tags) ? tags : [];
-    
-    const image = req.file ? { 
-      data: req.file.buffer, 
-      contentType: req.file.mimetype 
-    } : undefined;
-
     const project = new Project({
       title,
       description,
-      tags: parsedTags,
+      tags: Array.isArray(tags) ? tags : tags.split(',').map(tag => tag.trim()),
       category,
-      featured: !!featured,
-      image,
       github,
-      live
+      live,
+      featured: featured === 'true',
+      image: req.file ? {
+        data: req.file.buffer,
+        contentType: req.file.mimetype
+      } : null
     });
 
-    const savedProject = await project.save();
-    const projectObj = processImageForResponse(savedProject);
-    
-    res.status(201).json({ success: true, data: projectObj });
+    await project.save();
+    res.status(201).json({ success: true, data: project });
   } catch (err) {
-    console.error('Error in createProject:', err);
-    res.status(400).json({ 
-      success: false, 
-      message: err.message,
-      ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
-    });
+    console.error('Error creating project:', err);
+    res.status(400).json({ success: false, message: err.message });
   }
 };
 
-// Update existing project
+// Update project
 const updateProject = async (req, res) => {
   try {
-    const { title, description, tags, category, github, live, featured } = req.body;
-    
-    const parsedTags = typeof tags === 'string' ? 
-      tags.split(',').map(tag => tag.trim()) : 
-      Array.isArray(tags) ? tags : [];
-    
-    const updateData = { 
-      title, 
-      description, 
-      tags: parsedTags, 
-      category, 
-      github, 
-      live, 
-      featured: !!featured,
-      updatedAt: Date.now() 
+    const updates = {
+      ...req.body,
+      updatedAt: Date.now()
     };
     
     if (req.file) {
-      updateData.image = {
+      updates.image = {
         data: req.file.buffer,
         contentType: req.file.mimetype
       };
     }
-
-    const updatedProject = await Project.findByIdAndUpdate(
-      req.params.id,
-      updateData,
-      { new: true, runValidators: true }
-    );
-
-    if (!updatedProject) {
+    
+    const project = await Project.findByIdAndUpdate(req.params.id, updates, {
+      new: true,
+      runValidators: true
+    });
+    
+    if (!project) {
       return res.status(404).json({ success: false, message: 'Project not found' });
     }
     
-    // Clear cache for this project
-    if (redisClient) {
-      await redisClient.del(`project:${req.params.id}`);
-    }
-    
-    const projectObj = processImageForResponse(updatedProject);
-    
-    res.status(200).json({ success: true, data: projectObj });
+    res.json({ success: true, data: project });
   } catch (err) {
-    console.error('Error in updateProject:', err);
-    res.status(400).json({ 
-      success: false, 
-      message: err.message,
-      ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
-    });
+    console.error('Error updating project:', err);
+    res.status(400).json({ success: false, message: err.message });
   }
 };
 
@@ -277,15 +109,30 @@ const deleteProject = async (req, res) => {
     if (!project) {
       return res.status(404).json({ success: false, message: 'Project not found' });
     }
-    
-    // Clear cache for this project
-    if (redisClient) {
-      await redisClient.del(`project:${req.params.id}`);
+    res.json({ success: true, data: project });
+  } catch (err) {
+    console.error('Error deleting project:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// Serve image
+const serveImage = async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.id);
+    if (!project || !project.image || !project.image.data) {
+      return res.status(404).json({ success: false, message: 'Image not found' });
     }
     
-    res.status(200).json({ success: true, data: project });
+    res.set({
+      'Content-Type': project.image.contentType,
+      'Content-Length': project.image.size,
+      'Cache-Control': 'public, max-age=31536000' // 1 year cache
+    });
+    
+    res.send(project.image.data);
   } catch (err) {
-    console.error('Error in deleteProject:', err);
+    console.error('Error serving image:', err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
