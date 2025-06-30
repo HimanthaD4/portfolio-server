@@ -3,9 +3,9 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
+const multer = require('multer');
 const path = require('path');
 
-// Import routes
 const projectRoutes = require('./routes/projectRoutes');
 const authRoutes = require('./routes/authRoutes');
 const adminRoutes = require('./routes/adminRoutes');
@@ -13,7 +13,7 @@ const contactRoutes = require('./routes/contactRoutes');
 
 const app = express();
 
-// Configure CORS
+// CORS Configuration
 const allowedOrigins = process.env.FRONTEND_URL 
   ? process.env.FRONTEND_URL.split(',').map(url => url.trim())
   : ['http://localhost:3000'];
@@ -33,12 +33,39 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-// Body parsing middleware
+// Middlewares
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(cookieParser());
 
-// MongoDB connection
+// Public folder for uploads
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
+
+// Multer setup for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, 'public/uploads/');
+  },
+  filename: (req, file, cb) => {
+    cb(null, `${Date.now()}-${file.originalname}`);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const filetypes = /jpeg|jpg|png|gif/;
+    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = filetypes.test(file.mimetype);
+    if (extname && mimetype) {
+      return cb(null, true);
+    }
+    cb(new Error('Only images are allowed (jpeg, jpg, png, gif)'));
+  }
+});
+
+// MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
@@ -51,13 +78,13 @@ mongoose.connect(process.env.MONGODB_URI, {
   process.exit(1);
 });
 
-// API routes
+// Routes
 app.use('/api/projects', projectRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/contact', contactRoutes);
 
-// Health check endpoint
+// Health check
 app.get('/api/health', (req, res) => {
   res.status(200).json({
     status: 'UP',
@@ -66,19 +93,12 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Serve static files in production
-if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, '../client/build')));
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../client/build', 'index.html'));
-  });
-}
-
-// Error handling
+// 404 handler
 app.use((req, res) => {
   res.status(404).json({ success: false, message: `Not Found - ${req.method} ${req.originalUrl}` });
 });
 
+// Global Error Handler
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(err.statusCode || 500).json({
@@ -87,11 +107,13 @@ app.use((err, req, res, next) => {
   });
 });
 
+// Server Start
 const PORT = process.env.PORT || 5000;
 const server = app.listen(PORT, () => {
   console.log(`🚀 Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
 });
 
+// Graceful Shutdown
 process.on('unhandledRejection', (err) => {
   console.error('UNHANDLED REJECTION 🔥', err.name, err.message);
   server.close(() => process.exit(1));
