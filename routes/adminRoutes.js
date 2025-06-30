@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
+const { requireAuth } = require('../middleware/authMiddleware'); // adjust path if needed
 
-router.get('/dashboard', (req, res) => {
+router.get('/dashboard', requireAuth, (req, res) => {
   console.log('Admin dashboard accessed by user ID:', req.userId);
   try {
     res.json({ 
